@@ -1,0 +1,18 @@
+{
+  "event": {
+    "name": "Cloud Computing Workshop",
+    "capacity": 100,
+    "status": "PUBLISHED"
+  },
+  "demo_sequence": [
+    "Organizer creates event",
+    "Attendee A selects GOING",
+    "Organizer sees Going = 1",
+    "Attendee B selects MAYBE",
+    "Organizer sees Maybe = 1",
+    "Attendee B changes MAYBE to GOING",
+    "Organizer sees Going = 2 and Maybe = 0",
+    "Organizer posts an announcement",
+    "Attendees see the announcement notification"
+  ]
+}
