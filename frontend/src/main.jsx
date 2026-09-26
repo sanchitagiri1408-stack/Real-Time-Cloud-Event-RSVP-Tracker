@@ -49,6 +49,55 @@ function Organizer({events,onRefresh}) {
   const [selected,setSelected]=useState(null), [analytics,setAnalytics]=useState(null);
   const create=async e=>{e.preventDefault();try{await api("/api/events",{method:"POST",body:JSON.stringify({...form,maximum_capacity:Number(form.maximum_capacity)})});alert("Event created");onRefresh()}catch(x){alert(x.message)}};
   useEffect(()=>{if(selected)api(`/api/events/${selected}/analytics`).then(setAnalytics).catch(()=>{})},[selected]);
+  useEffect(() => {
+  if (!selected) return;
+
+  const wsUrl =
+    API.replace(/^http/, "ws") +
+    `/ws/events/${selected}`;
+
+  console.log("Connecting organizer WebSocket:", wsUrl);
+
+  const ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    console.log("Organizer WebSocket connected");
+  };
+
+  ws.onmessage = async (e) => {
+    try {
+      const message = JSON.parse(e.data);
+
+      console.log("Organizer WebSocket message:", message);
+
+      if (message.type === "RSVP_UPDATED") {
+        console.log("RSVP update received. Refreshing analytics...");
+
+        const freshAnalytics =
+          await api(`/api/events/${selected}/analytics`);
+
+        setAnalytics(freshAnalytics);
+      }
+
+    } catch (error) {
+      console.error("WebSocket message error:", error);
+    }
+  };
+
+  ws.onerror = (error) => {
+    console.error("Organizer WebSocket error:", error);
+  };
+
+  ws.onclose = () => {
+    console.log("Organizer WebSocket disconnected");
+  };
+
+  return () => {
+    console.log("Closing organizer WebSocket");
+    ws.close();
+  };
+
+}, [selected]);
   return <div><div className="card"><h2>Organizer Dashboard</h2><form className="grid" onSubmit={create}>{["event_name","description","event_date","start_time","end_time","venue","maximum_capacity","registration_deadline"].map(k=><input key={k} placeholder={k} value={form[k]} onChange={e=>setForm({...form,[k]:e.target.value})}/>)}<button>Create Event</button></form></div>
   {events.map(e=><div className="card" key={e.id}><h3>{e.event_name}</h3><p>Status: <b>{e.status}</b> · Capacity: {e.maximum_capacity}</p><button onClick={()=>setSelected(e.id)}>View Live Analytics</button>{selected===e.id&&analytics&&<div className="stats"><span>Going <b>{analytics.GOING}</b></span><span>Maybe <b>{analytics.MAYBE}</b></span><span>Not Going <b>{analytics.NOT_GOING}</b></span><span>Utilization <b>{analytics.capacity_utilization}%</b></span></div>}</div>)}</div>
 }

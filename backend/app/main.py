@@ -12,7 +12,11 @@ from .services import VALID_RSVPS, counts, create_notification, audit
 from .realtime import manager
 
 Base.metadata.create_all(bind=engine)
-app = FastAPI(title="Real-Time Cloud Event RSVP Tracker", version="1.0.0")
+
+app = FastAPI(
+    title="Real-Time Cloud Event RSVP Tracker",
+    version="1.0.0"
+)
 app.add_middleware(CORSMiddleware, allow_origins=cors_list(), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/health")
@@ -92,40 +96,130 @@ def delete_event(event_id: int, user=Depends(require_role("ORGANIZER")), db: Ses
     return {"message": "Event cancelled"}
 
 @app.post("/api/events/{event_id}/rsvp", response_model=RSVPOut)
-async def rsvp(event_id: int, data: RSVPRequest, user=Depends(current_user), db: Session = Depends(get_db)):
+async def rsvp(
+    event_id: int,
+    data: RSVPRequest,
+    user=Depends(current_user),
+    db: Session = Depends(get_db)
+):
     status_value = data.status.upper()
-    if status_value not in VALID_RSVPS: raise HTTPException(400, "Invalid RSVP status")
-    event = db.get(Event, event_id)
-    if not event: raise HTTPException(404, "Event not found")
-    existing = db.query(RSVP).filter(RSVP.event_id == event_id, RSVP.user_id == user.id).first()
 
-    # SQLite local mode cannot provide row-level locks; PostgreSQL deployments should use
-    # a transaction/conditional SQL function for the final-seat guarantee.
+    if status_value not in VALID_RSVPS:
+        raise HTTPException(400, "Invalid RSVP status")
+
+    event = db.get(Event, event_id)
+
+    if not event:
+        raise HTTPException(404, "Event not found")
+
+    existing = db.query(RSVP).filter(
+        RSVP.event_id == event_id,
+        RSVP.user_id == user.id
+    ).first()
+
+    # SQLite local mode cannot provide row-level locks.
+    # PostgreSQL deployments should use a transaction/conditional SQL
+    # function for the final-seat guarantee.
     if status_value == "GOING":
-        current = db.query(RSVP).filter(RSVP.event_id == event_id, RSVP.status == "GOING", RSVP.user_id != user.id).count()
-        if current >= event.maximum_capacity and not (existing and existing.status == "GOING"):
-            # Optional waitlist: FIFO position.
-            if not db.query(Waitlist).filter(Waitlist.event_id == event_id, Waitlist.user_id == user.id).first():
-                pos = db.query(Waitlist).filter(Waitlist.event_id == event_id).count() + 1
-                db.add(Waitlist(event_id=event_id, user_id=user.id, position=pos))
+
+        current = db.query(RSVP).filter(
+            RSVP.event_id == event_id,
+            RSVP.status == "GOING",
+            RSVP.user_id != user.id
+        ).count()
+
+        if current >= event.maximum_capacity and not (
+            existing and existing.status == "GOING"
+        ):
+
+            # Optional waitlist: FIFO position
+            if not db.query(Waitlist).filter(
+                Waitlist.event_id == event_id,
+                Waitlist.user_id == user.id
+            ).first():
+
+                pos = db.query(Waitlist).filter(
+                    Waitlist.event_id == event_id
+                ).count() + 1
+
+                db.add(
+                    Waitlist(
+                        event_id=event_id,
+                        user_id=user.id,
+                        position=pos
+                    )
+                )
+
                 db.commit()
-            raise HTTPException(409, "Event is full. You have been added to the waitlist.")
+
+            raise HTTPException(
+                409,
+                "Event is full. You have been added to the waitlist."
+            )
+
     if existing:
         existing.status = status_value
         existing.updated_at = datetime.utcnow()
         record = existing
-    else:
-        record = RSVP(event_id=event_id, user_id=user.id, status=status_value)
-        db.add(record)
-    db.commit(); db.refresh(record)
-    c = counts(db, event_id)
-    event.status = "FULL" if c["GOING"] >= event.maximum_capacity else "PUBLISHED"
-    create_notification(db, user.id, event_id, "RSVP", f"Your RSVP is {status_value}.")
-    audit(db, user.id, "RSVP", "EVENT", event_id)
-    db.commit()
-    await manager.broadcast(event_id, {"type": "RSVP_UPDATED", "event_id": event_id, "counts": c})
-    return record
 
+    else:
+        record = RSVP(
+            event_id=event_id,
+            user_id=user.id,
+            status=status_value
+        )
+        db.add(record)
+
+    db.commit()
+    db.refresh(record)
+
+    # Calculate updated RSVP counts
+    c = counts(db, event_id)
+
+    # DEBUG: show RSVP update in backend terminal
+    print(
+        f"[RSVP] event={event_id} "
+        f"user={user.id} "
+        f"status={status_value} "
+        f"counts={c}"
+    )
+
+    # Update event status
+    event.status = (
+        "FULL"
+        if c["GOING"] >= event.maximum_capacity
+        else "PUBLISHED"
+    )
+
+    create_notification(
+        db,
+        user.id,
+        event_id,
+        "RSVP",
+        f"Your RSVP is {status_value}."
+    )
+
+    audit(
+        db,
+        user.id,
+        "RSVP",
+        "EVENT",
+        event_id
+    )
+
+    db.commit()
+
+    # Send real-time update to connected clients
+    await manager.broadcast(
+        event_id,
+        {
+            "type": "RSVP_UPDATED",
+            "event_id": event_id,
+            "counts": c
+        }
+    )
+
+    return record
 @app.put("/api/events/{event_id}/rsvp", response_model=RSVPOut)
 async def update_rsvp(event_id: int, data: RSVPRequest, user=Depends(current_user), db: Session = Depends(get_db)):
     return await rsvp(event_id, data, user, db)
